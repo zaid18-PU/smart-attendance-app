@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Smart Attendance AI</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg: '#0A0F0D',
+          panel: '#111813',
+          panel2: '#151E18',
+          hairline: '#233029',
+          scan: '#7CFFB2',
+          scan2: '#4ADE94',
+          amber: '#FFB454',
+          red: '#FF6B6B',
+          ink: '#E8F0EC',
+          muted: '#7C9187',
+        },
+        fontFamily: {
+          display: ['"Space Grotesk"', 'sans-serif'],
+          body: ['Inter', 'sans-serif'],
+          mono: ['"JetBrains Mono"', 'monospace'],
+        },
+      },
+    },
+  }
+</script>
+
+<style>
+  body { background: #0A0F0D; }
+  .scan-corners { position: relative; }
+  .scan-corners::before, .scan-corners::after,
+  .scan-corners .sc-tr, .scan-corners .sc-bl {
+    content: ''; position: absolute; width: 14px; height: 14px;
+    border-color: #4ADE94; opacity: 0.65;
+  }
+  .scan-corners::before { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; }
+  .scan-corners::after { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; }
+  .scan-corners .sc-tr { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; }
+  .scan-corners .sc-bl { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; }
+
+  @keyframes scanline {
+    0% { transform: translateY(0); opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { transform: translateY(100%); opacity: 0; }
+  }
+  .scanline-anim { animation: scanline 2.2s ease-in-out infinite; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #111813; }
+  ::-webkit-scrollbar-thumb { background: #233029; border-radius: 4px; }
+
+  .glow-text { text-shadow: 0 0 18px rgba(124,255,178,0.35); }
+</style>
+</head>
+<body class="font-body bg-bg text-ink min-h-screen">
+
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react,stubs">
+const { useState, useEffect, useRef, useCallback } = React;
+const { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } = Recharts;
+
+const API = "/api";
+
+// ---------- shared bits ----------
+
+function ScanCorners({ children, className = "" }) {
+  return (
+    <div className={`scan-corners ${className}`}>
+      <span className="sc-tr"></span>
+      <span className="sc-bl"></span>
+      {children}
+    </div>
+  );
+}
+
+function Eyebrow({ children }) {
+  return (
+    <div className="font-mono text-[11px] tracking-[0.2em] uppercase text-scan/80 mb-2">
+      {children}
+    </div>
+  );
+}
+
+function Badge({ children, tone = "scan" }) {
+  const tones = {
+    scan: "bg-scan/10 text-scan border-scan/30",
+    amber: "bg-amber/10 text-amber border-amber/30",
+    red: "bg-red/10 text-red border-red/30",
+    muted: "bg-white/5 text-muted border-hairline",
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] border ${tones[tone]}`}>
+      {children}
+    </span>
+  );
+}
+
+function Spinner() {
+  return (
+    <div className="flex items-center gap-2 text-scan font-mono text-sm">
+      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+        <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+        <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      processing…
+    </div>
+  );
+}
+
+// ---------- layout ----------
+
+function Sidebar({ page, setPage }) {
+  const items = [
+    { id: "dashboard", label: "Dashboard", icon: "◧" },
+    { id: "enroll", label: "Enroll Roster", icon: "◎" },
+    { id: "attendance", label: "Take Attendance", icon: "▣" },
+    { id: "history", label: "History", icon: "≣" },
+  ];
+  return (
+    <div className="w-60 shrink-0 h-screen sticky top-0 border-r border-hairline bg-panel flex flex-col">
+      <div className="px-5 py-6 border-b border-hairline">
+        <div className="font-display font-bold text-lg glow-text">Smart Attendance</div>
+        <div className="font-mono text-[10px] text-muted tracking-widest mt-1">AI · VISION · REALTIME</div>
+      </div>
+      <nav className="flex-1 py-4 px-3 space-y-1">
+        {items.map((it) => (
+          <button
+            key={it.id}
+            onClick={() => setPage(it.id)}
+            className={`w-full text-left px-3 py-2.5 rounded-md flex items-center gap-3 font-body text-sm transition
+              ${page === it.id ? "bg-scan/10 text-scan border border-scan/20" : "text-muted hover:text-ink hover:bg-white/5 border border-transparent"}`}
+          >
+            <span className="font-mono text-base">{it.icon}</span>
+            {it.label}
+          </button>
+        ))}
+      </nav>
+      <div className="px-5 py-4 border-t border-hairline font-mono text-[10px] text-muted">
+        pipeline: RetinaFace → DINOv2 (ViT) → cosine match → FLAN-T5 report
+      </div>
+    </div>
+  );
+}
+
+// ---------- Dashboard ----------
+
+function StatCard({ label, value, tone = "scan" }) {
+  const toneText = { scan: "text-scan", amber: "text-amber", red: "text-red", ink: "text-ink" };
+  return (
+    <ScanCorners className="bg-panel2 border border-hairline rounded-md px-5 py-4">
+      <div className="font-mono text-[11px] uppercase tracking-widest text-muted mb-1">{label}</div>
+      <div className={`font-display text-3xl font-semibold ${toneText[tone]}`}>{value}</div>
+    </ScanCorners>
+  );
+}
+
+function Dashboard({ setPage }) {
+  const [history, setHistory] = useState([]);
+  const [roster, setRoster] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API}/history`).then(r => r.json()),
+      fetch(`${API}/roster`).then(r => r.json()),
+    ]).then(([h, r]) => {
+      setHistory(h.history || []);
+      setRoster(r.roster || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const last = history[0];
+  const trend = [...history].reverse().map((s, i) => ({
+    name: `#${i + 1}`,
+    rate: s.total_roster ? Math.round((s.total_present / s.total_roster) * 100) : 0,
+  }));
+
+  return (
+    <div className="p-8 max-w-6xl">
+      <Eyebrow>Overview</Eyebrow>
+      <h1 className="font-display text-3xl font-semibold mb-1">Dashboard</h1>
+      <p className="text-muted text-sm mb-8">Live roster status and recent attendance sessions.</p>
+
+      <div className="grid grid-cols-4 gap-4 mb-8">
+        <StatCard label="Roster Size" value={roster.length} />
+        <StatCard label="Sessions Logged" value={history.length} />
+        <StatCard label="Last Present" value={last ? last.total_present : "—"} tone="scan" />
+        <StatCard label="Last Absent" value={last ? last.total_absent : "—"} tone="amber" />
+      </div>
+
+      <ScanCorners className="bg-panel2 border border-hairline rounded-md p-6 mb-8">
+        <Eyebrow>Attendance rate trend</Eyebrow>
+        {trend.length > 1 ? (
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={trend}>
+              <defs>
+                <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#7CFFB2" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#7CFFB2" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="#233029" strokeDasharray="3 3" />
+              <XAxis dataKey="name" stroke="#7C9187" fontSize={11} />
+              <YAxis stroke="#7C9187" fontSize={11} unit="%" domain={[0, 100]} />
+              <Tooltip contentStyle={{ background: "#111813", border: "1px solid #233029", fontSize: 12 }} />
+              <Area type="monotone" dataKey="rate" stroke="#4ADE94" fill="url(#g1)" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="text-muted text-sm font-mono py-10 text-center">Not enough sessions yet — run attendance a couple of times to see the trend.</div>
+        )}
+      </ScanCorners>
+
+      {roster.length === 0 && (
+        <ScanCorners className="bg-panel2 border border-amber/30 rounded-md p-6 flex items-center justify-between">
+          <div>
+            <div className="font-display font-semibold text-amber mb-1">Roster is empty</div>
+            <div className="text-sm text-muted">Enroll students before running attendance.</div>
+          </div>
+          <button onClick={() => setPage("enroll")} className="px-4 py-2 rounded bg-scan/10 border border-scan/30 text-scan font-mono text-sm hover:bg-scan/20">
+            Go to Enroll →
+          </button>
+        </ScanCorners>
+      )}
+    </div>
+  );
+}
+
+// ---------- Enroll ----------
+
+function Dropzone({ onFile, previewUrl }) {
+  const inputRef = useRef();
+  const [dragging, setDragging] = useState(false);
+
+  const handleFiles = (files) => {
+    if (files && files[0]) onFile(files[0]);
+  };
+
+  return (
+    <ScanCorners
+      className={`rounded-md border-2 border-dashed ${dragging ? "border-scan bg-scan/5" : "border-hairline"} flex flex-col items-center justify-center h-64 cursor-pointer transition overflow-hidden`}
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
+    >
+      <div className="w-full h-full flex items-center justify-center" onClick={() => inputRef.current.click()}>
+        {previewUrl ? (
+          <img src={previewUrl} className="max-h-full max-w-full object-contain" />
+        ) : (
+          <div className="text-center px-6">
+            <div className="text-3xl mb-2 text-scan">▣</div>
+            <div className="font-mono text-sm text-muted">drag & drop a photo, or click to browse</div>
+          </div>
+        )}
+      </div>
+      <input ref={inputRef} type="file" accept="image/*" className="hidden"
+        onChange={(e) => handleFiles(e.target.files)} />
+    </ScanCorners>
+  );
+}
+
+function Enroll() {
+  const [name, setName] = useState("");
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [roster, setRoster] = useState([]);
+
+  const loadRoster = useCallback(() => {
+    fetch(`${API}/roster`).then(r => r.json()).then(d => setRoster(d.roster || []));
+  }, []);
+
+  useEffect(() => { loadRoster(); }, [loadRoster]);
+
+  const onFile = (f) => {
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+  };
+
+  const submit = async () => {
+    if (!name.trim() || !file) {
+      setStatus({ ok: false, msg: "Provide a name and a photo first." });
+      return;
+    }
+    setLoading(true);
+    setStatus(null);
+    const fd = new FormData();
+    fd.append("name", name.trim());
+    fd.append("file", file);
+    try {
+      const res = await fetch(`${API}/enroll`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enrollment failed.");
+      setStatus({ ok: true, msg: data.message });
+      setFile(null);
+      setPreview(null);
+      loadRoster();
+    } catch (e) {
+      setStatus({ ok: false, msg: e.message });
+    }
+    setLoading(false);
+  };
+
+  const remove = async (id) => {
+    await fetch(`${API}/roster/${id}`, { method: "DELETE" });
+    loadRoster();
+  };
+
+  return (
+    <div className="p-8 max-w-6xl grid grid-cols-2 gap-8">
+      <div>
+        <Eyebrow>Roster / Step 1</Eyebrow>
+        <h1 className="font-display text-3xl font-semibold mb-1">Enroll a student</h1>
+        <p className="text-muted text-sm mb-6">One clear, front-facing photo per student. Add more photos later to improve match accuracy.</p>
+
+        <label className="font-mono text-[11px] uppercase tracking-widest text-muted mb-2 block">Student name</label>
+        <input
+          value={name} onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Aditi Sharma"
+          className="w-full mb-5 px-4 py-3 bg-panel2 border border-hairline rounded-md text-sm focus:outline-none focus:border-scan/50 font-body"
+        />
+
+        <label className="font-mono text-[11px] uppercase tracking-widest text-muted mb-2 block">Reference photo</label>
+        <Dropzone onFile={onFile} previewUrl={preview} />
+
+        <button
+          onClick={submit} disabled={loading}
+          className="mt-5 w-full py-3 rounded-md bg-scan text-bg font-display font-semibold text-sm hover:bg-scan2 transition disabled:opacity-50"
+        >
+          {loading ? "Enrolling…" : "Enroll Student"}
+        </button>
+
+        {status && (
+          <div className={`mt-4 px-4 py-3 rounded-md font-mono text-sm border ${status.ok ? "border-scan/30 bg-scan/10 text-scan" : "border-red/30 bg-red/10 text-red"}`}>
+            {status.msg}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <Eyebrow>Current Roster</Eyebrow>
+        <h2 className="font-display text-xl font-semibold mb-4">{roster.length} student(s)</h2>
+        <div className="space-y-2 max-h-[560px] overflow-y-auto pr-2">
+          {roster.length === 0 && <div className="text-muted text-sm font-mono">No students enrolled yet.</div>}
+          {roster.map((s) => (
+            <div key={s.id} className="flex items-center justify-between bg-panel2 border border-hairline rounded-md px-4 py-3">
+              <div>
+                <div className="font-body text-sm">{s.name}</div>
+                <div className="font-mono text-[11px] text-muted">{s.num_embeddings} reference photo(s)</div>
+              </div>
+              <button onClick={() => remove(s.id)} className="text-red/70 hover:text-red font-mono text-xs px-2 py-1 border border-red/20 rounded">
+                remove
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Take Attendance ----------
+
+function TakeAttendance() {
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [threshold, setThreshold] = useState(0.55);
+
+  const onFile = (f) => {
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+    setResult(null);
+    setError(null);
+  };
+
+  const run = async () => {
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("threshold", threshold);
+    try {
+      const res = await fetch(`${API}/attendance`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to process photo.");
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="p-8 max-w-6xl">
+      <Eyebrow>Live Scan</Eyebrow>
+      <h1 className="font-display text-3xl font-semibold mb-1">Take Attendance</h1>
+      <p className="text-muted text-sm mb-6">Upload a class / group photo. Every detected face is matched against the roster.</p>
+
+      <div className="grid grid-cols-2 gap-8">
+        <div>
+          <Dropzone onFile={onFile} previewUrl={result ? result.annotated_image : preview} />
+
+          <div className="mt-4 flex items-center gap-3">
+            <label className="font-mono text-[11px] text-muted uppercase tracking-widest">Match threshold</label>
+            <input type="range" min="0.2" max="0.85" step="0.01" value={threshold}
+              onChange={(e) => setThreshold(parseFloat(e.target.value))} className="flex-1 accent-scan" />
+            <span className="font-mono text-xs text-scan">{threshold.toFixed(2)}</span>
+          </div>
+
+          <button onClick={run} disabled={loading || !file}
+            className="mt-5 w-full py-3 rounded-md bg-scan text-bg font-display font-semibold text-sm hover:bg-scan2 transition disabled:opacity-50">
+            {loading ? "Scanning…" : "Mark Attendance"}
+          </button>
+
+          {loading && <div className="mt-4"><Spinner /></div>}
+          {error && <div className="mt-4 px-4 py-3 rounded-md font-mono text-sm border border-red/30 bg-red/10 text-red">{error}</div>}
+        </div>
+
+        <div>
+          {result ? (
+            <div className="space-y-5">
+              <div className="grid grid-cols-3 gap-3">
+                <StatCard label="Present" value={result.present.length} tone="scan" />
+                <StatCard label="Absent" value={result.absent.length} tone="amber" />
+                <StatCard label="Roster" value={result.present.length + result.absent.length} tone="ink" />
+              </div>
+
+              <ScanCorners className="bg-panel2 border border-hairline rounded-md p-5">
+                <Eyebrow>AI Summary</Eyebrow>
+                <p className="text-sm leading-relaxed font-body text-ink/90">{result.summary}</p>
+              </ScanCorners>
+
+              <div>
+                <Eyebrow>Attendance Sheet</Eyebrow>
+                <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1">
+                  {result.records.map((r, i) => (
+                    <div key={i} className="flex items-center justify-between bg-panel2 border border-hairline rounded px-3 py-2">
+                      <span className="font-body text-sm">{r.name}</span>
+                      <div className="flex items-center gap-2">
+                        {r.confidence != null && <span className="font-mono text-[11px] text-muted">{r.confidence.toFixed(2)}</span>}
+                        <Badge tone={r.status === "Present" ? "scan" : "amber"}>{r.status}</Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-full flex items-center justify-center text-muted font-mono text-sm border border-dashed border-hairline rounded-md py-24">
+              results will appear here
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- History ----------
+
+function History() {
+  const [history, setHistory] = useState([]);
+  const [detail, setDetail] = useState(null);
+
+  const load = () => fetch(`${API}/history`).then(r => r.json()).then(d => setHistory(d.history || []));
+  useEffect(() => { load(); }, []);
+
+  const openDetail = (id) => {
+    fetch(`${API}/history/${id}`).then(r => r.json()).then(setDetail);
+  };
+
+  return (
+    <div className="p-8 max-w-6xl grid grid-cols-2 gap-8">
+      <div>
+        <Eyebrow>Log</Eyebrow>
+        <h1 className="font-display text-3xl font-semibold mb-1">Session History</h1>
+        <p className="text-muted text-sm mb-6">Every attendance run is stored — click a session to see full detail.</p>
+
+        <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
+          {history.length === 0 && <div className="text-muted text-sm font-mono">No sessions yet.</div>}
+          {history.map((s) => (
+            <button key={s.id} onClick={() => openDetail(s.id)}
+              className="w-full text-left bg-panel2 border border-hairline hover:border-scan/40 rounded-md px-4 py-3 transition">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-xs text-muted">{new Date(s.created_at * 1000).toLocaleString()}</span>
+                <Badge tone="scan">{s.total_present}/{s.total_roster} present</Badge>
+              </div>
+              <div className="text-sm text-ink/80 mt-1 line-clamp-2">{s.summary}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <Eyebrow>Detail</Eyebrow>
+        <h2 className="font-display text-xl font-semibold mb-4">Session breakdown</h2>
+        {detail ? (
+          <ScanCorners className="bg-panel2 border border-hairline rounded-md p-5">
+            <div className="font-mono text-xs text-muted mb-3">{new Date(detail.created_at * 1000).toLocaleString()}</div>
+            <p className="text-sm mb-4">{detail.summary}</p>
+            <div className="space-y-1.5 max-h-96 overflow-y-auto">
+              {detail.records.map((r, i) => (
+                <div key={i} className="flex items-center justify-between px-3 py-2 bg-panel border border-hairline rounded">
+                  <span className="text-sm">{r.name}</span>
+                  <Badge tone={r.status === "Present" ? "scan" : "amber"}>{r.status}</Badge>
+                </div>
+              ))}
+            </div>
+          </ScanCorners>
+        ) : (
+          <div className="text-muted font-mono text-sm border border-dashed border-hairline rounded-md py-24 text-center">
+            select a session to view details
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- App ----------
+
+function App() {
+  const [page, setPage] = useState("dashboard");
+  return (
+    <div className="flex">
+      <Sidebar page={page} setPage={setPage} />
+      <div className="flex-1">
+        {page === "dashboard" && <Dashboard setPage={setPage} />}
+        {page === "enroll" && <Enroll />}
+        {page === "attendance" && <TakeAttendance />}
+        {page === "history" && <History />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
