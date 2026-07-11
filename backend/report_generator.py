@@ -9,8 +9,20 @@ from transformers import pipeline
 import torch
 
 DEVICE = 0 if torch.cuda.is_available() else -1
-
 _summarizer = None
+
+
+def _summary_is_consistent(text, present_names, absent_names):
+    """Reject AI-generated text that contradicts the actual attendance data
+    (small models like FLAN-T5-base occasionally hallucinate present/absent)."""
+    text_lower = text.lower()
+    for name in present_names:
+        if name.lower() in text_lower and "absent" in text_lower:
+            idx = text_lower.find(name.lower())
+            window = text_lower[max(0, idx - 40):idx + 40]
+            if "absent" in window and "present" not in window:
+                return False
+    return True
 
 
 def load_report_model():
@@ -26,7 +38,6 @@ def load_report_model():
 
 def generate_summary(present_names, absent_names, total_roster):
     present_pct = (len(present_names) / total_roster * 100) if total_roster else 0
-
     prompt = (
         "Write a short, professional attendance summary paragraph (3-4 sentences) "
         f"for a class session. Total students on roster: {total_roster}. "
@@ -43,7 +54,7 @@ def generate_summary(present_names, absent_names, total_roster):
     try:
         result = _summarizer(prompt, max_new_tokens=120, do_sample=False)
         text = result[0]["generated_text"].strip()
-        if len(text) < 10:  # model sometimes returns near-empty output
+        if len(text) < 10 or not _summary_is_consistent(text, present_names, absent_names):
             return _fallback_summary(present_names, absent_names, total_roster, present_pct)
         return text
     except Exception as e:
