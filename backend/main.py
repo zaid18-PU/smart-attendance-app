@@ -18,12 +18,14 @@ import numpy as np
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from openpyxl import Workbook
 
 import database as db
 import face_engine
 import report_generator
+import metrics
 
 app = FastAPI(title="Smart Attendance AI")
 
@@ -113,6 +115,7 @@ class AttendanceResponse(BaseModel):
     records: list
     summary: str
     session_id: int
+    timing: dict
 
 
 @app.post("/api/attendance")
@@ -123,7 +126,10 @@ async def api_take_attendance(file: UploadFile = File(...), threshold: float = F
 
     roster_embeddings = db.get_all_embeddings()
     img_bgr = read_upload_as_bgr(await file.read())
+
+    t0 = time.time()
     faces = face_engine.detect_faces(img_bgr)
+    t1 = time.time()
 
     matched_ids = set()
     draw_results = []
@@ -141,6 +147,8 @@ async def api_take_attendance(file: UploadFile = File(...), threshold: float = F
             "score": score,
             "matched": matched,
         })
+
+    t2 = time.time()
 
     all_students = {r["id"]: r["name"] for r in roster}
     present_names, absent_names = [], []
@@ -161,6 +169,7 @@ async def api_take_attendance(file: UploadFile = File(...), threshold: float = F
         records.append({"student_id": None, "name": name, "status": "Absent", "confidence": None})
 
     summary = report_generator.generate_summary(present_names, absent_names, len(roster))
+    t3 = time.time()
 
     session_id = db.create_session(
         total_roster=len(roster),
@@ -175,6 +184,14 @@ async def api_take_attendance(file: UploadFile = File(...), threshold: float = F
 
     records_sorted = sorted(records, key=lambda r: (r["status"] != "Present", r["name"]))
 
+    timing = {
+        "detection_ms": round((t1 - t0) * 1000, 1),
+        "embedding_and_matching_ms": round((t2 - t1) * 1000, 1),
+        "summary_generation_ms": round((t3 - t2) * 1000, 1),
+        "total_ms": round((t3 - t0) * 1000, 1),
+        "num_faces_detected": len(faces),
+    }
+
     return AttendanceResponse(
         annotated_image=annotated_b64,
         present=sorted(present_names),
@@ -182,6 +199,7 @@ async def api_take_attendance(file: UploadFile = File(...), threshold: float = F
         records=records_sorted,
         summary=summary,
         session_id=session_id,
+        timing=timing,
     )
 
 
@@ -202,9 +220,41 @@ def api_history_detail(session_id: int):
     return detail
 
 
+@app.get("/api/history/{session_id}/export")
+def api_export_session(session_id: int):
+    detail = db.get_session_detail(session_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attendance"
+    ws.append(["Name", "Status", "Confidence"])
+    for r in detail["records"]:
+        ws.append([r["name"], r["status"], r["confidence"]])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=attendance_session_{session_id}.xlsx"},
+    )
+
+
 @app.get("/api/health")
 def api_health():
     return {"status": "ok", "time": time.time()}
+
+
+# ---------------------------------------------------------------------------
+# Model performance metrics endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/metrics")
+def api_metrics(threshold: float = MATCH_THRESHOLD_DEFAULT):
+    return metrics.evaluate_verification(threshold)
 
 
 # ---------------------------------------------------------------------------
