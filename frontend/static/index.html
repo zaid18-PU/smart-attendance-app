@@ -128,11 +128,12 @@ function Spinner() {
 // ---------- layout ----------
 
 function Sidebar({ page, setPage }) {
-  const items = [
+ const items = [
     { id: "dashboard", label: "Dashboard", icon: "◧" },
     { id: "enroll", label: "Enroll Roster", icon: "◎" },
     { id: "attendance", label: "Take Attendance", icon: "▣" },
     { id: "history", label: "History", icon: "≣" },
+    { id: "metrics", label: "Model Metrics", icon: "◈" },
   ];
   return (
     <div className="w-60 shrink-0 h-screen sticky top-0 border-r border-hairline bg-panel flex flex-col">
@@ -520,7 +521,13 @@ function History() {
         <h2 className="font-display text-xl font-semibold mb-4">Session breakdown</h2>
         {detail ? (
           <ScanCorners className="bg-panel2 border border-hairline rounded-md p-5">
-            <div className="font-mono text-xs text-muted mb-3">{new Date(detail.created_at * 1000).toLocaleString()}</div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-mono text-xs text-muted">{new Date(detail.created_at * 1000).toLocaleString()}</div>
+              <a href={`${API}/history/${detail.id}/export`}
+                 className="font-mono text-[11px] px-2 py-1 rounded border border-scan/30 text-scan hover:bg-scan/10">
+                ⬇ Download Excel
+              </a>
+            </div>
             <p className="text-sm mb-4">{detail.summary}</p>
             <div className="space-y-1.5 max-h-96 overflow-y-auto">
               {detail.records.map((r, i) => (
@@ -541,6 +548,84 @@ function History() {
   );
 }
 
+  function MetricRow({ label, value }) {
+  return (
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-hairline last:border-0">
+      <span className="text-sm text-muted font-mono">{label}</span>
+      <span className="text-sm font-semibold">{value}</span>
+    </div>
+  );
+}
+
+function Metrics() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [threshold, setThreshold] = useState(0.55);
+
+  const load = () => {
+    setLoading(true);
+    fetch(`${API}/metrics?threshold=${threshold}`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="p-8 max-w-4xl">
+      <Eyebrow>Evaluation</Eyebrow>
+      <h1 className="font-display text-3xl font-semibold mb-1">Model Performance</h1>
+      <p className="text-muted text-sm mb-6">
+        Pairwise verification metrics computed from roster embeddings (DINOv2 ViT + cosine similarity).
+      </p>
+
+      <div className="flex items-center gap-3 mb-6">
+        <label className="font-mono text-[11px] text-muted uppercase tracking-widest">Threshold</label>
+        <input type="range" min="0.2" max="0.85" step="0.01" value={threshold}
+          onChange={(e) => setThreshold(parseFloat(e.target.value))} className="flex-1 accent-scan" />
+        <span className="font-mono text-xs text-scan">{threshold.toFixed(2)}</span>
+        <button onClick={load} className="px-3 py-1.5 rounded bg-scan/10 border border-scan/30 text-scan font-mono text-xs hover:bg-scan/20">
+          Recompute
+        </button>
+      </div>
+
+      {loading && <Spinner />}
+      {error && <div className="px-4 py-3 rounded-md font-mono text-sm border border-red/30 bg-red/10 text-red">{error}</div>}
+
+      {data && data.error && (
+        <div className="px-4 py-3 rounded-md font-mono text-sm border border-amber/30 bg-amber/10 text-amber">{data.error}</div>
+      )}
+
+      {data && !data.error && (
+        <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 col-span-2">
+            <StatCard label="Accuracy" value={`${(data.accuracy * 100).toFixed(1)}%`} tone="scan" />
+            <StatCard label="F1 Score" value={data.f1_score} tone="scan" />
+            <StatCard label="Precision" value={data.precision} tone="ink" />
+            <StatCard label="Recall" value={data.recall} tone="ink" />
+          </div>
+
+          <ScanCorners className="bg-panel2 border border-hairline rounded-md col-span-2">
+            <div className="px-4 py-3 border-b border-hairline">
+              <Eyebrow>Confusion Matrix &amp; Pair Counts</Eyebrow>
+            </div>
+            <MetricRow label="True Positives" value={data.confusion_matrix.tp} />
+            <MetricRow label="False Positives" value={data.confusion_matrix.fp} />
+            <MetricRow label="True Negatives" value={data.confusion_matrix.tn} />
+            <MetricRow label="False Negatives" value={data.confusion_matrix.fn} />
+            <MetricRow label="Total Pairs Evaluated" value={data.num_pairs} />
+            <MetricRow label="ROC-AUC" value={data.roc_auc ?? "—"} />
+            <MetricRow label="Mean Genuine-Pair Score" value={data.score_distribution.positive_pairs_mean_score ?? "—"} />
+            <MetricRow label="Mean Impostor-Pair Score" value={data.score_distribution.negative_pairs_mean_score ?? "—"} />
+          </ScanCorners>
+        </div>
+      )}
+    </div>
+  );
+}
+  
 // ---------- App ----------
 
 function App() {
@@ -553,11 +638,11 @@ function App() {
         {page === "enroll" && <Enroll />}
         {page === "attendance" && <TakeAttendance />}
         {page === "history" && <History />}
+        {page === "metrics" && <Metrics />}
       </div>
     </div>
   );
 }
-
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
 </body>
